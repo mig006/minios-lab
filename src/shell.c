@@ -209,7 +209,24 @@ static void cmd_run(const char *path, const char *arg) {
     //         arrancar el scheduler con timer_get_slice() como slice:
     //         scheduler_start(timer_get_slice());
 
-    (void)path; (void)arg;  // silence unused while unimplemented
+    if (!path || strlen(path) == 0) {
+        printf("Uso: run <binario> [argumento]\n");
+        return;
+    }
+
+    if (access(path, X_OK) != 0) {
+        printf("Error: '%s' no encontrado o no es ejecutable.\n", path);
+        return;
+    }
+
+    int idx = scheduler_create_process(path, arg);
+    if (idx < 0) {
+        return;
+    }
+
+    if (!scheduler_is_running() && !rq_is_empty()) {
+        scheduler_start(timer_get_slice());
+    }
 }
 
 
@@ -244,6 +261,21 @@ static void cmd_ps(void) {
     // Pista: puedes implementar esto desde cero con tu propio formato
     // si prefieres. Los campos del PCB estan en pcb_t (ver pcb.h):
     //   pid, name, state, cpu_time_ms, wait_time_ms, context_switches
+
+    block_alarm();
+
+    if (process_count == 0) {
+        printf("No hay procesos.\n");
+        unblock_alarm();
+        return;
+    }
+
+    printf("\n");
+    pcb_print_table();
+    printf("\n");
+    rq_print();
+
+    unblock_alarm();
 }
 
 
@@ -279,7 +311,38 @@ static void cmd_kill_proc(const char *arg) {
 
     // Paso 6. unblock_alarm() al terminar.
 
-    (void)arg;  // silence unused while unimplemented
+    if (!arg || strlen(arg) == 0) {
+        printf("Uso: kill <pid>\n");
+        return;
+    }
+
+    int target_pid = atoi(arg);
+    if (target_pid <= 0) {
+        printf("PID invalido\n");
+        return;
+    }
+
+    block_alarm();
+
+    int found = 0;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].pid == target_pid && process_table[i].state != PROC_TERMINATED) {
+            found = 1;
+            kill(target_pid, SIGKILL);
+            int status;
+            waitpid(target_pid, &status, 0);
+            process_table[i].state = PROC_TERMINATED;
+            rq_remove(i);
+            printf("Proceso PID %d terminado.\n", target_pid);
+            break;
+        }
+    }
+
+    if (!found) {
+        printf("Proceso PID %d no encontrado.\n", target_pid);
+    }
+
+    unblock_alarm();
 }
 
 
@@ -324,6 +387,38 @@ static void cmd_stats(void) {
     //         (total_cpu / process_count) y (total_wait / process_count).
 
     // Paso 5. unblock_alarm().
+
+    block_alarm();
+
+    int active = 0, terminated = 0;
+    double total_cpu = 0.0, total_wait = 0.0;
+    int total_switches = 0;
+
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i].state == PROC_TERMINATED) {
+            terminated++;
+        } else {
+            active++;
+        }
+        total_cpu += process_table[i].cpu_time_ms;
+        total_wait += process_table[i].wait_time_ms;
+        total_switches += process_table[i].context_switches;
+    }
+
+    printf("\n=== Estadisticas del Scheduler ===\n");
+    printf("  Procesos activos:      %d\n", active);
+    printf("  Procesos terminados:   %d\n", terminated);
+    printf("  Time slice actual:     %d ms\n", timer_get_slice());
+    printf("  CPU total acumulado:   %.1f ms\n", total_cpu);
+    printf("  Context switches:      %d\n", total_switches);
+
+    if (process_count > 0) {
+        printf("  Avg CPU por proceso:   %.1f ms\n", total_cpu / process_count);
+        printf("  Avg espera:            %.1f ms\n", total_wait / process_count);
+    }
+    printf("\n");
+
+    unblock_alarm();
 }
 
 
