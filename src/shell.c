@@ -324,23 +324,38 @@ static void cmd_kill_proc(const char *arg) {
 
     block_alarm();
 
-    int found = 0;
+    int target_idx = -1;
     for (int i = 0; i < process_count; i++) {
         if (process_table[i].pid == target_pid && process_table[i].state != PROC_TERMINATED) {
-            found = 1;
-            kill(target_pid, SIGKILL);
-            int status;
-            waitpid(target_pid, &status, 0);
-            process_table[i].state = PROC_TERMINATED;
-            rq_remove(i);
-            printf("Proceso PID %d terminado.\n", target_pid);
+            target_idx = i;
             break;
         }
     }
 
-    if (!found) {
+    if (target_idx < 0) {
         printf("Proceso PID %d no encontrado.\n", target_pid);
+        unblock_alarm();
+        return;
     }
+
+    int was_running = (target_idx == scheduler_get_running());
+
+    kill(target_pid, SIGKILL);
+
+    if (!was_running) {
+        // No estaba en CPU: lo recogemos aqui y limpiamos su PCB y la cola
+        // para que `ps` refleje el cambio al instante.
+        int status;
+        waitpid(target_pid, &status, 0);
+        process_table[target_idx].state = PROC_TERMINATED;
+        rq_remove(target_idx);
+    }
+    // Si era el RUNNING, NO hacemos waitpid aqui: dejamos que el handler
+    // SIGCHLD recoja al hijo, actualice current_running y despache al
+    // siguiente. Si waitpid lo recogiera primero, current_running quedaria
+    // apuntando a un PID muerto y el proximo SIGALRM operaria sobre el.
+
+    printf("Proceso PID %d terminado.\n", target_pid);
 
     unblock_alarm();
 }
